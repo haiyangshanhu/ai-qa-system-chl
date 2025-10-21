@@ -1,0 +1,176 @@
+# 工作流的名称，会显示在 GitHub Actions 的 UI 界面中
+name: CI/CD for AI QA System(pr3)
+
+# 工作流的触发条件
+on:
+  # 当有代码推送到 main 分支时触发
+  push:
+    branches: [ "main", "pr3" ]
+  # 当有针对 main 分支的 Pull Request 被创建或更新时触发
+  pull_request:
+    branches: [ "main" ]
+
+# 定义工作流中的所有任务 (Jobs)
+jobs:
+  # --- 第一个任务：构建并测试后端微服务 ---
+  build-and-test-backend:
+    # 任务的名称，会显示在 UI 中
+    name: Build and Test Backend Services
+    # 运行此任务所需的虚拟机环境
+    runs-on: ubuntu-22.04
+
+    # 任务的执行步骤
+    steps:
+      # 步骤 1: 检出代码
+      # 使用官方的 actions/checkout@v4 action 来获取仓库的最新代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 步骤 2: 设置 Java 环境
+      # 使用官方的 actions/setup-java@v4 action 来安装和配置 JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # 步骤 3: 缓存 Maven 依赖
+      # 为了加速构建，缓存下载过的 Maven 依赖包。
+      # 这样下次构建时，如果 pom.xml 没有变化，就可以直接使用缓存，节省大量时间。
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      # 步骤 4: 使用 Maven 构建和测试
+      # -B: Batch mode，避免交互式提示
+      # clean package: 执行清理、编译、测试、打包等所有操作
+      - name: Build with Maven
+        run: |
+          cd backend-services
+          mvn -B clean package
+
+      # 步骤 5: build and upload jar files
+      - name: Upload JAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-artifacts
+          path: |
+            backend-services/api-gateway/target/*.jar
+            backend-services/user-service/target/*.jar
+            backend-services/qa-service/target/*.jar
+          retention-days: 1
+
+  # --- 第二个任务：构建 Docker 镜像并推送到仓库 ---
+  build-and-push-images:
+    # 任务的名称
+    name: Build and Push Docker Images
+    # 运行此任务所需的虚拟机环境
+    runs-on: ubuntu-22.04
+
+    # 依赖关系：这个任务必须在 `build-and-test-backend` 成功完成后才能开始
+    needs: build-and-test-backend
+
+    # 任务的执行步骤
+    steps:
+      # 清理所有Docker资源，构建缓存，悬空镜像
+      # - name: Clean docker environment
+      #   run: |
+      #     docker system prune -a -f
+      #     docker builder prune -a -f
+      #     docker image prune -f
+
+      # 步骤 1: 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download JAR artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jar-artifacts
+          path: backend-services
+
+      # 步骤 2: 登录到 Docker Hub
+      # 这是将镜像推送到 Docker Hub 所必需的步骤。
+      # 你需要先在 GitHub 仓库的 Settings -> Secrets and variables -> Actions 中设置好 DOCKERHUB_USERNAME 和 DOCKERHUB_TOKEN。
+      # DOCKERHUB_TOKEN 应该是一个 Access Token，而不是你的密码。
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 步骤 3: 设置 Docker Buildx
+      # Buildx 是一个 Docker CLI 插件，它扩展了 docker build 命令，支持多阶段构建等高级功能。
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 步骤 4: 构建并推送 API Gateway 镜像
+      # docker/build-push-action@v5 action 会自动完成构建和推送两个步骤。
+      # context: Dockerfile 所在的目录。
+      # file: Dockerfile 的具体路径。
+      # push: true 表示要推送到仓库。
+      # tags: 为镜像打上标签，格式通常是 "用户名/镜像名:版本号"。latest 是一个常用标签。
+      - name: Build and push API Gateway image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend-services/api-gateway
+          file: ./backend-services/api-gateway/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-qa-api-gateway:latest
+
+      # 步骤 5: 构建并推送 User Service 镜像
+      - name: Build and push User Service image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend-services/user-service
+          file: ./backend-services/user-service/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-qa-user-service:latest
+
+      # 步骤 6: 构建并推送 QA Service 镜像
+      - name: Build and push QA Service image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend-services/qa-service
+          file: ./backend-services/qa-service/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-qa-qa-service:latest
+
+      # 步骤 7: 构建并推送 Frontend 镜像
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend-nextjs/frontend # 假设前端项目在根目录的 frontend 文件夹下
+          file: ./frontend-nextjs/frontend/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-qa-frontend:latest
+      
+      # 步骤 8: 上传 docker-compose.yml 到 EC2 服务器
+      - name: Upload docker-compose.yml to EC2
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "docker-compose.yml"
+          target: "~/aiqasystem-cicd/"
+          overwrite: true
+
+      # 步骤 9: 部署到 EC2 服务器
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/aiqasystem-cicd
+            docker-compose down --volumes --remove-orphans
+            docker-compose pull
+            docker-compose up -d
+            docker image prune -f

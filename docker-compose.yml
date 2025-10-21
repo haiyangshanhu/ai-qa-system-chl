@@ -1,0 +1,91 @@
+services:
+  # MySQL 数据库
+  database:
+    image: mysql:8.0
+    container_name: ai-qa-mysql
+    restart: always
+    environment:
+      # MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      # MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_ROOT_PASSWORD: ai_qa_system
+      MYSQL_DATABASE: ai_qa_system
+      # ✅ 正确：删除了 MYSQL_USER 和 MYSQL_PASSWORD
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - ai-qa-network
+
+  # User Service - 使用 root 用户连接
+  user-service:
+    image: zaqwsx123456a/ai-qa-user-service:latest
+    container_name: ai-qa-user-service
+    restart: always
+    ports:
+      - "8081:8081"
+    depends_on:
+      - database
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://database:3306/ai_qa_system?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root #  修改：直接写 root，不要用变量
+      SPRING_DATASOURCE_PASSWORD: ai_qa_system # 使用 root 密码
+    networks:
+      - ai-qa-network
+
+  # QA Service - 使用 root 用户连接
+  qa-service:
+    image: zaqwsx123456a/ai-qa-qa-service:latest
+    container_name: ai-qa-qa-service
+    restart: always
+    ports:
+      - "8082:8082"
+    depends_on:
+      - database
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://database:3306/ai_qa_system?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root # 修改：直接写 root，不要用变量
+      SPRING_DATASOURCE_PASSWORD: ai_qa_system # 使用 root 密码
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+    networks:
+      - ai-qa-network
+
+  # API Gateway
+  api-gateway:
+    image: zaqwsx123456a/ai-qa-api-gateway:latest
+    container_name: ai-qa-api-gateway
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - user-service
+      - qa-service
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://13.51.85.43:8080
+      USER_SERVICE_URL: http://user-service:8081
+      QA_SERVICE_URL: http://qa-service:8082
+    networks:
+      - ai-qa-network
+
+  # Frontend
+  frontend:
+    image: zaqwsx123456a/ai-qa-frontend:latest
+    container_name: ai-qa-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://13.51.85.43:8080
+    networks:
+      - ai-qa-network
+
+# 添加：声明 volumes 部分
+volumes:
+  db_data:
+
+# 添加：声明 networks 部分
+networks:
+  ai-qa-network:
+    driver: bridge
